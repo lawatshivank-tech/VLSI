@@ -1,0 +1,108 @@
+`timescale 1ns / 1ps
+
+module pipeline_processor(
+    input clk,
+    input reset
+);
+    // 00=NOP, 01=LOAD, 10=ADD, 11=SUB
+    reg [15:0] instr_mem [0:7];
+    reg [7:0] reg_file [0:3];
+    reg [7:0] pc;
+
+    reg [15:0] IF_ID_Instr;
+    reg [1:0] ID_EX_Opcode;
+    reg [1:0] ID_EX_Dest;
+    reg [7:0] ID_EX_Val1, ID_EX_Val2;
+    reg [1:0] EX_WB_Dest;
+    reg [7:0] EX_WB_ALU_Out;
+    reg       EX_WB_WriteEn;
+    
+    integer i;
+
+    initial begin
+        instr_mem[0] = {2'b01, 2'b00, 12'd10}; // LOAD R0, #10
+        instr_mem[1] = {2'b01, 2'b01, 12'd20}; // LOAD R1, #20
+        instr_mem[2] = 16'h0000;               // NOP (Solves RAW Pipeline Hazard)
+        instr_mem[3] = 16'h0000;               // NOP
+        // ADD R2 = R0 + R1 -> Op=10, Dest=10, Src1=00(R0), Src2=01(R1)
+        instr_mem[4] = {2'b10, 2'b10, 4'd0, 2'b00, 4'd0, 2'b01}; 
+        // SUB R3 = R1 - R0 -> Op=11, Dest=11, Src1=01(R1), Src2=00(R0)
+        instr_mem[5] = {2'b11, 2'b11, 4'd0, 2'b01, 4'd0, 2'b00};
+        instr_mem[6] = 16'h0000; // NOP
+        instr_mem[7] = 16'h0000; // NOP
+        
+        for (i=0; i<4; i=i+1) reg_file[i] = 8'd0;
+    end
+
+    // STAGE 1: IF (Instruction Fetch)
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            pc <= 0; IF_ID_Instr <= 16'h0000;
+        end else begin
+            IF_ID_Instr <= instr_mem[pc[2:0]]; pc <= pc + 1;
+        end
+    end
+
+    // STAGE 2: ID (Instruction Decode)
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            ID_EX_Opcode <= 0; ID_EX_Dest <= 0; ID_EX_Val1 <= 0; ID_EX_Val2 <= 0;
+        end else begin
+            ID_EX_Opcode <= IF_ID_Instr[15:14];
+            ID_EX_Dest   <= IF_ID_Instr[13:12];
+            if (IF_ID_Instr[15:14] == 2'b01) begin // LOAD
+                ID_EX_Val1 <= IF_ID_Instr[7:0]; 
+                ID_EX_Val2 <= 0;
+            end else if (IF_ID_Instr[15:14] == 2'b10 || IF_ID_Instr[15:14] == 2'b11) begin // ADD/SUB
+                ID_EX_Val1 <= reg_file[IF_ID_Instr[9:8]];
+                ID_EX_Val2 <= reg_file[IF_ID_Instr[1:0]];
+            end else begin // NOP
+                ID_EX_Val1 <= 0; ID_EX_Val2 <= 0;
+            end
+        end
+    end
+
+    // STAGE 3: EX (Execute)
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            EX_WB_Dest <= 0; EX_WB_ALU_Out <= 0; EX_WB_WriteEn <= 0;
+        end else begin
+            EX_WB_Dest <= ID_EX_Dest;
+            case(ID_EX_Opcode)
+                2'b01: begin EX_WB_ALU_Out <= ID_EX_Val1;              EX_WB_WriteEn <= 1; end // LOAD
+                2'b10: begin EX_WB_ALU_Out <= ID_EX_Val1 + ID_EX_Val2; EX_WB_WriteEn <= 1; end // ADD
+                2'b11: begin EX_WB_ALU_Out <= ID_EX_Val1 - ID_EX_Val2; EX_WB_WriteEn <= 1; end // SUB
+                default: begin EX_WB_ALU_Out <= 0;                     EX_WB_WriteEn <= 0; end // NOP
+            endcase
+        end
+    end
+
+    // STAGE 4: WB (Write Back)
+    always @(posedge clk or posedge reset) begin
+        if (!reset && EX_WB_WriteEn) begin
+            reg_file[EX_WB_Dest] <= EX_WB_ALU_Out;
+        end
+    end
+endmodule
+     `timescale 1ns / 1ps
+
+module processor_tb;
+    reg clk, reset;
+
+    pipeline_processor uut (.clk(clk), .reset(reset));
+
+    always #5 clk = ~clk;
+
+    initial begin
+        clk = 0; reset = 1; #10 reset = 0;
+        $display("Cycle\t PC\t IF_Instr\t EX_Out\t R0\t R1\t R2\t R3");
+        
+        repeat(9) begin
+            @(negedge clk);
+            $display("%0d\t %d\t %h\t\t %d\t %d\t %d\t %d\t %d", 
+                $time/10, uut.pc, uut.IF_ID_Instr, uut.EX_WB_ALU_Out, 
+                uut.reg_file[0], uut.reg_file[1], uut.reg_file[2], uut.reg_file[3]);
+        end
+        $finish;
+    end
+endmodule           
